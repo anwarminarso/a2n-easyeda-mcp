@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>a2n.EasyEDA MCP - Configure</title>
+	<style>
+		:root { color-scheme: light dark; }
+		* { box-sizing: border-box; }
+		body {
+			font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+			margin: 0; padding: 16px; font-size: 13px; line-height: 1.4;
+		}
+		h1 { font-size: 15px; margin: 0 0 12px; }
+		.field { margin-bottom: 14px; }
+		label { display: block; font-weight: 600; margin-bottom: 4px; }
+		input[type="number"], select {
+			width: 100%; padding: 6px 8px; border: 1px solid #8884; border-radius: 6px;
+			background: transparent; color: inherit; font-size: 13px;
+		}
+		.hint { opacity: 0.7; font-size: 11px; margin-top: 3px; }
+		.row { display: flex; align-items: center; gap: 8px; }
+		.row input[type="checkbox"] { width: 16px; height: 16px; }
+		.actions { display: flex; gap: 8px; margin-top: 18px; }
+		button {
+			flex: 1; padding: 8px 10px; border: none; border-radius: 6px; cursor: pointer;
+			font-size: 13px; font-weight: 600;
+		}
+		.primary { background: #2f7df6; color: #fff; }
+		.secondary { background: #8883; color: inherit; }
+		#status { margin-top: 12px; min-height: 16px; font-size: 12px; }
+		.ok { color: #2ea043; }
+		.err { color: #e5534b; }
+	</style>
+</head>
+<body>
+	<h1>a2n.EasyEDA MCP — Configuration</h1>
+
+	<div class="field">
+		<label for="port">WebSocket port</label>
+		<input type="number" id="port" min="1" max="65535" value="8788" />
+		<div class="hint">Must match the MCP server (--port=NNNN or A2N_EDA_WS_PORT).</div>
+	</div>
+
+	<div class="field">
+		<label for="mode">Component sourcing mode</label>
+		<select id="mode">
+			<option value="hybrid">Hybrid (local first, then online)</option>
+			<option value="online">Online (EasyEDA backend search)</option>
+			<option value="offline">Offline (local/system libraries only)</option>
+		</select>
+	</div>
+
+	<div class="field row">
+		<input type="checkbox" id="autoConnect" checked />
+		<label for="autoConnect" style="margin:0;">Auto-connect on startup</label>
+	</div>
+
+	<div class="actions">
+		<button class="primary" id="save">Save &amp; Reconnect</button>
+		<button class="secondary" id="close">Close</button>
+	</div>
+
+	<div id="status"></div>
+
+	<script>
+		var api = (typeof eda !== 'undefined' && eda) || (window.parent && window.parent.eda) || (window.top && window.top.eda);
+		var statusEl = document.getElementById('status');
+
+		function setStatus(msg, cls) {
+			statusEl.textContent = msg;
+			statusEl.className = cls || '';
+		}
+
+		async function load() {
+			try {
+				if (!api || !api.a2nGetConfig) { setStatus('Extension API not available.', 'err'); return; }
+				var cfg = await api.a2nGetConfig();
+				document.getElementById('port').value = cfg.port;
+				document.getElementById('mode').value = cfg.mode;
+				document.getElementById('autoConnect').checked = !!cfg.autoConnect;
+			} catch (e) {
+				setStatus('Failed to load config: ' + (e && e.message ? e.message : e), 'err');
+			}
+		}
+
+		function tryClose() {
+			try { if (api && api.sys_IFrame && api.sys_IFrame.closeIFrame) api.sys_IFrame.closeIFrame(); } catch (e) {}
+			try { window.close(); } catch (e) {}
+		}
+
+		document.getElementById('save').addEventListener('click', async function () {
+			try {
+				var port = parseInt(document.getElementById('port').value, 10);
+				var mode = document.getElementById('mode').value;
+				var autoConnect = document.getElementById('autoConnect').checked;
+				if (!api || !api.a2nSetConfig) { setStatus('Extension API not available.', 'err'); return; }
+				await api.a2nSetConfig({ port: port, mode: mode, autoConnect: autoConnect });
+				setStatus('Saved. Reconnecting to ws://127.0.0.1:' + port + ' ...', 'ok');
+			} catch (e) {
+				setStatus('Save failed: ' + (e && e.message ? e.message : e), 'err');
+			}
+		});
+
+		document.getElementById('close').addEventListener('click', tryClose);
+
+		load();
+	</script>
+</body>
+</html>

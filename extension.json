@@ -1,0 +1,54 @@
+{
+	"name": "a2n-easyeda-mcp",
+	"uuid": "a2e0d0a0000000000000000000000001",
+	"displayName": "a2n.EasyEDA MCP",
+	"description": "Pure interface MCP bridge for EasyEDA Pro. No AI, no external server. Online/Offline/Hybrid.",
+	"version": "1.0.0",
+	"publisher": "a2n",
+	"engines": {
+		"eda": "^2.2.0"
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": ""
+	},
+	"categories": "Other",
+	"keywords": ["MCP", "PCB", "EasyEDA", "Automation", "a2n"],
+	"images": {
+		"logo": "./images/logo.png"
+	},
+	"activationEvents": {
+		"onStartupFinished": "activate"
+	},
+	"entry": "./dist/index",
+	"dependentExtensions": {},
+	"headerMenus": {
+		"sch": [
+			{
+				"id": "A2nMcpSch",
+				"title": "a2n MCP",
+				"menuItems": [
+					{ "id": "A2nConnectSch", "title": "Connect MCP", "registerFn": "connectMcp" },
+					{ "id": "A2nDisconnectSch", "title": "Disconnect MCP", "registerFn": "disconnectMcp" },
+					{ "id": "A2nConfigureSch", "title": "Configure...", "registerFn": "openConfig" },
+					{ "id": "A2nStatusSch", "title": "Status", "registerFn": "showStatus" },
+					{ "id": "A2nAboutSch", "title": "About", "registerFn": "about" }
+				]
+			}
+		],
+		"pcb": [
+			{
+				"id": "A2nMcpPcb",
+				"title": "a2n MCP",
+				"menuItems": [
+					{ "id": "A2nConnectPcb", "title": "Connect MCP", "registerFn": "connectMcp" },
+					{ "id": "A2nDisconnectPcb", "title": "Disconnect MCP", "registerFn": "disconnectMcp" },
+					{ "id": "A2nConfigurePcb", "title": "Configure...", "registerFn": "openConfig" },
+					{ "id": "A2nStatusPcb", "title": "Status", "registerFn": "showStatus" },
+					{ "id": "A2nAboutPcb", "title": "About", "registerFn": "about" }
+				]
+			}
+		]
+	}
+}

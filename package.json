@@ -1,0 +1,48 @@
+{
+	"name": "a2n-easyeda-mcp",
+	"version": "1.0.0",
+	"description": "a2n.EasyEDA MCP - Pure interface MCP server for EasyEDA Pro (no AI, no external server). Online/Offline/Hybrid.",
+	"license": "MIT",
+	"author": "a2n",
+	"repository": {
+		"type": "git",
+		"url": ""
+	},
+	"keywords": ["mcp", "easyeda", "jlceda", "pcb", "schematic", "eda", "automation", "a2n"],
+	"type": "commonjs",
+	"bin": {
+		"a2n-easyeda-mcp": "dist/mcp-server/index.js"
+	},
+	"files": [
+		"dist/mcp-server",
+		"README.md",
+		"LICENSE"
+	],
+	"scripts": {
+		"compile": "rimraf ./dist/ && ts-node ./config/esbuild.prod.ts",
+		"build": "npm run compile && ts-node ./build/packaged.ts",
+		"start": "node dist/mcp-server/index.js",
+		"prepublishOnly": "npm run compile"
+	},
+	"devDependencies": {
+		"@jlceda/pro-api-types": "^0.2.30",
+		"@modelcontextprotocol/sdk": "^1.12.1",
+		"@types/fs-extra": "^11.0.4",
+		"@types/node": "^22.13.4",
+		"@types/ws": "^8.5.14",
+		"appdb": "^1.2.0",
+		"esbuild": "^0.24.2",
+		"fs-extra": "^11.3.0",
+		"ignore": "^7.0.3",
+		"jszip": "^3.10.1",
+		"p-queue": "^9.1.0",
+		"rimraf": "^6.0.1",
+		"ts-node": "^10.9.2",
+		"typescript": "^5.7.3",
+		"ws": "^8.18.0",
+		"zod": "^3.24.2"
+	},
+	"engines": {
+		"node": ">=20.5.0"
+	}
+}

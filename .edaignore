@@ -1,0 +1,13 @@
+/.git/
+/.vscode/
+/build/
+/config/
+/node_modules/
+/src/
+/.gitignore
+/package-lock.json
+/package.json
+/tsconfig.json
+/dist/mcp-server/
+/.edaignore
+debug.log
