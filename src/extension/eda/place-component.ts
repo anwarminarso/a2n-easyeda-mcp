@@ -29,8 +29,10 @@ export const placeComponent = async (
 				addIntoPcb,
 			);
 
-			if (isOffline) comp = await withTimeout(compPromise, 25000);
-			else comp = await compPromise;
+			// Always guard placement with a timeout. EasyEDA's create() can hang
+			// indefinitely when a uuid/library cannot be resolved (offline) or when an
+			// online fetch stalls; an unbounded await here would freeze the whole assemble.
+			comp = await withTimeout(compPromise, isOffline ? 25000 : 30000);
 		} catch (error) {
 			comp = undefined;
 		}

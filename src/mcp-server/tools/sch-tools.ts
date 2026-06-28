@@ -159,7 +159,30 @@ export function registerSchTools(server: McpServer, bridge: WebSocketBridge): vo
 				.describe('Pin-to-net assignments; pins with the same net get connected'),
 			saveCheckpoint: z.boolean().optional().describe('Save an undo checkpoint before assembling (default true)'),
 		},
-		async (params) => text(await bridge.send('sch.assemble', params)),
+		async (params, extra) => {
+			// Assembling a large circuit can take well beyond the MCP client's default
+			// request timeout (often 30s). Emit periodic progress notifications so clients
+			// that honor `resetTimeoutOnProgress` keep the request alive. The WS bridge is
+			// given a long per-call timeout; the extension itself enforces an overall budget.
+			const progressToken = extra?._meta?.progressToken;
+			let ticks = 0;
+			const interval = setInterval(() => {
+				if (progressToken === undefined) return;
+				ticks++;
+				void extra
+					.sendNotification({
+						method: 'notifications/progress',
+						params: { progressToken, progress: ticks, message: 'Assembling circuit...' },
+					})
+					.catch(() => undefined);
+			}, 10000);
+
+			try {
+				return text(await bridge.send('sch.assemble', params, 290000));
+			} finally {
+				clearInterval(interval);
+			}
+		},
 	);
 
 	// ===== Project / schematic management =====

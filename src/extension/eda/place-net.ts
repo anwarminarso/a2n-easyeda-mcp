@@ -249,14 +249,44 @@ async function place(group: AddedNet[], myIndex: number, placeComponents: Placed
 	}
 }
 
-export async function placeNet(nets: AddedNet[], placeComponents: PlacedComponents, makePort: boolean) {
+export async function placeNet(
+	nets: AddedNet[],
+	placeComponents: PlacedComponents,
+	makePort: boolean,
+	deadlineAt?: number,
+): Promise<{ wired: number; skipped: number; timedOut: boolean }> {
 	const groups = await groupAndSortNetsByDesignator(nets, placeComponents);
+
+	let wired = 0;
+	let skipped = 0;
+	let timedOut = false;
 
 	for (const group of groups) {
 		for (let index = 0; index < group.length; index++) {
-			await place(group, index, placeComponents, makePort ? group.length < 8 : makePort);
+			if (deadlineAt && Date.now() > deadlineAt) {
+				timedOut = true;
+				skipped++;
+				continue;
+			}
+
+			try {
+				// Guard every pin: the wire-search trial loops plus EDA create() calls
+				// can stall on pathological geometry; one bad pin must not freeze assembly.
+				await withTimeout(
+					place(group, index, placeComponents, makePort ? group.length < 8 : makePort),
+					20000,
+					'placeNet pin timeout',
+				);
+				wired++;
+			} catch (err) {
+				skipped++;
+				const net = group[index];
+				eda.sys_Log.add(`placeNet pin error/timeout: ${net.designator} ${net.pin_number} (${net.net})`);
+			}
 		}
 	}
+
+	return { wired, skipped, timedOut };
 }
 
 export async function rmNet(nets: RmNet[], _placeComponents: PlacedComponents) {

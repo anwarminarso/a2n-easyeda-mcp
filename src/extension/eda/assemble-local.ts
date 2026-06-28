@@ -26,9 +26,16 @@ export interface AssembleInput {
 /**
  * Fully local circuit assembly: place components (auto free-placement when no
  * coordinates are given) and auto-wire pins by net name. No external server, no AI.
+ *
+ * The whole operation is bounded by an overall wall-clock budget so the handler
+ * always returns a (possibly partial) result before the WS bridge request timeout,
+ * instead of hanging on a large circuit and surfacing a "Request timed out" error.
  */
+const ASSEMBLE_BUDGET_MS = 220_000; // stay safely under the 300s bridge timeout
+
 export async function assembleLocal(input: AssembleInput) {
 	const { components, nets = [], saveCheckpoint = true } = input;
+	const deadlineAt = Date.now() + ASSEMBLE_BUDGET_MS;
 
 	if (saveCheckpoint) {
 		await checkpointer.save(false).catch(() => undefined);
@@ -44,6 +51,10 @@ export async function assembleLocal(input: AssembleInput) {
 	const placedReport: Array<{ designator: string; ok: boolean; error?: string }> = [];
 
 	for (const comp of components) {
+		if (Date.now() > deadlineAt) {
+			placedReport.push({ designator: comp.designator, ok: false, error: 'skipped: time budget exceeded' });
+			continue;
+		}
 		try {
 			let x = comp.x;
 			let y = comp.y;
@@ -78,12 +89,26 @@ export async function assembleLocal(input: AssembleInput) {
 		}
 	}
 
+	let netResult = { wired: 0, skipped: 0, timedOut: false };
 	if (nets.length) {
-		await placeNet(nets, placed, true);
+		if (Date.now() > deadlineAt) {
+			netResult = { wired: 0, skipped: nets.length, timedOut: true };
+		} else {
+			netResult = await placeNet(nets, placed, true, deadlineAt);
+		}
 	}
 
 	const placedCount = placedReport.filter((r) => r.ok).length;
-	eda.sys_Message.showToastMessage(`a2n assemble complete: ${placedCount}/${components.length} components.`, ESYS_ToastMessageType.SUCCESS);
+	const timedOut = Date.now() > deadlineAt || netResult.timedOut;
+	const summary = timedOut
+		? `a2n assemble stopped at time budget: ${placedCount}/${components.length} components, ${netResult.wired} nets wired.`
+		: `a2n assemble complete: ${placedCount}/${components.length} components.`;
+	eda.sys_Message.showToastMessage(summary, timedOut ? ESYS_ToastMessageType.WARNING : ESYS_ToastMessageType.SUCCESS);
 
-	return { placed: placedReport, netsWired: nets.length };
+	return {
+		placed: placedReport,
+		netsWired: netResult.wired,
+		netsSkipped: netResult.skipped,
+		timedOut,
+	};
 }

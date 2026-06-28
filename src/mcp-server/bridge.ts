@@ -101,7 +101,7 @@ export class WebSocketBridge {
 		return this.client !== null && this.client.readyState === WebSocket.OPEN;
 	}
 
-	async send(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+	async send(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<unknown> {
 		if (!this.isConnected()) {
 			throw new Error(
 				'EasyEDA extension is not connected.\n' +
@@ -113,12 +113,13 @@ export class WebSocketBridge {
 
 		const id = String(++this.requestIdCounter);
 		const request: BridgeRequest = { id, method, params };
+		const effectiveTimeout = timeoutMs ?? this.timeout;
 
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pendingRequests.delete(id);
-				reject(new Error(`Request timed out after ${this.timeout}ms: ${method}`));
-			}, this.timeout);
+				reject(new Error(`Request timed out after ${effectiveTimeout}ms: ${method}`));
+			}, effectiveTimeout);
 
 			this.pendingRequests.set(id, { resolve, reject, timer });
 			this.client!.send(JSON.stringify(request));
