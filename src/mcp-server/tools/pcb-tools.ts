@@ -163,6 +163,46 @@ export function registerPcbTools(server: McpServer, bridge: WebSocketBridge): vo
 		async (params) => text(await bridge.send('pcb.manufacture.getBomFile', params)),
 	);
 
+	server.tool(
+		'pcb_export_pick_place',
+		'Export pick-and-place (centroid) file for assembly (returned as base64). Requires a PCB document active.',
+		{ fileName: z.string().optional(), fileType: z.string().optional(), unit: z.string().optional() },
+		async (params) => text(await bridge.send('pcb.manufacture.getPickAndPlaceFile', params)),
+	);
+
+	server.tool(
+		'pcb_export_pdf',
+		'Export the PCB layout to PDF (returned as base64). Requires a PCB document active.',
+		{ fileName: z.string().optional() },
+		async ({ fileName }) => text(await bridge.send('pcb.manufacture.getPdfFile', { fileName })),
+	);
+
+	server.tool(
+		'pcb_export_3d',
+		'Export a 3D model file of the PCB (e.g. STEP). Returned as base64. Requires a PCB document active.',
+		{
+			fileName: z.string().optional(),
+			fileType: z.string().optional(),
+			element: z.string().optional(),
+			modelMode: z.string().optional(),
+			autoGenerateModels: z.boolean().optional(),
+		},
+		async (params) => text(await bridge.send('pcb.manufacture.get3DFile', params)),
+	);
+
+	server.tool(
+		'pcb_get_board_outline',
+		'Get the PCB board outline / dimensions (shape, width, height). Requires a PCB document to be active.',
+		{},
+		async () => {
+			const result = await bridge.send('eda.exec', { path: 'pcb_Document.getBoardOutline', args: [] });
+			if (result === undefined || result === null) {
+				return text({ available: false, message: 'No board outline available — open a PCB document first.' });
+			}
+			return text(result);
+		},
+	);
+
 	server.tool('pcb_save', 'Save the current PCB document.', { uuid: z.string().optional() }, async ({ uuid }) =>
 		text(await bridge.send('pcb.document.save', { uuid })),
 	);

@@ -1,6 +1,10 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import type { WebSocketBridge } from '../bridge';
+import { captureEditorImage } from '../cdp-capture';
 
 function text(result: unknown) {
 	return { content: [{ type: 'text' as const, text: typeof result === 'string' ? result : JSON.stringify(result, null, 2) }] };
@@ -50,6 +54,62 @@ export function registerSchTools(server: McpServer, bridge: WebSocketBridge): vo
 	);
 
 	server.tool(
+		'sch_validate_netlist',
+		'Validate schematic connectivity from the resolved circuit: reports floating (unconnected) pins, ' +
+			'single-pin nets (likely dangling), and a per-net summary. Read-only diagnostic that complements ' +
+			'the place -> wire -> verify loop. No EasyEDA write is performed.',
+		{ allSchematicPages: z.boolean().optional().describe('If true, validate across all pages, not just current') },
+		async (params) => {
+			type Pin = { pin_number?: string | number; name?: string; signal_name?: string };
+			type Comp = { designator?: string; pins?: Pin[] };
+			const circuit = (await bridge.send('sch.readCircuit', params)) as { components?: Comp[] };
+			const components = circuit?.components ?? [];
+
+			type Node = { designator: string; pin_number: string; pin_name: string };
+			const nets: Record<string, Node[]> = {};
+			const floating: Node[] = [];
+			let totalPins = 0;
+
+			for (const c of components) {
+				const designator = c.designator ?? '';
+				for (const p of c.pins ?? []) {
+					totalPins++;
+					const node: Node = { designator, pin_number: String(p.pin_number ?? ''), pin_name: p.name ?? '' };
+					const sig = (p.signal_name ?? '').trim();
+					if (!sig) {
+						floating.push(node);
+						continue;
+					}
+					(nets[sig] ??= []).push(node);
+				}
+			}
+
+			const singlePinNets = Object.entries(nets)
+				.filter(([, nodes]) => nodes.length < 2)
+				.map(([net, nodes]) => ({ net, nodes }));
+
+			const warnings: string[] = [];
+			if (floating.length) warnings.push(`${floating.length} floating pin(s) with no signal assigned`);
+			if (singlePinNets.length) warnings.push(`${singlePinNets.length} net(s) connect only a single pin (likely dangling)`);
+
+			return text({
+				summary: {
+					components: components.length,
+					pins: totalPins,
+					nets: Object.keys(nets).length,
+					floating_pins: floating.length,
+					single_pin_nets: singlePinNets.length,
+				},
+				valid: warnings.length === 0,
+				warnings,
+				floating_pins: floating,
+				single_pin_nets: singlePinNets,
+				nets: Object.entries(nets).map(([net, nodes]) => ({ net, node_count: nodes.length, nodes })),
+			});
+		},
+	);
+
+	server.tool(
 		'sch_get_selected',
 		'Get all currently selected primitives in the schematic editor.',
 		{},
@@ -61,6 +121,46 @@ export function registerSchTools(server: McpServer, bridge: WebSocketBridge): vo
 		'Run Design Rule Check (DRC) on the schematic.',
 		{ strict: z.boolean().optional(), userInterface: z.boolean().optional() },
 		async (params) => text(await bridge.send('sch.drc.check', params)),
+	);
+
+	server.tool(
+		'sch_export_image',
+		'Export the FULL schematic sheet as a PNG (whole A4 page: border, title block, and every ' +
+			'component) — reproducing EasyEDA\'s "Export -> PNG" with true colors, via Chrome DevTools Protocol. ' +
+			'Not a viewport screenshot: it reads the schematic SVG, reframes to the full content, and rasterizes. ' +
+			'Requires EasyEDA Pro launched with remote debugging (run-easyeda-debug.bat / README) and an open ' +
+			'schematic page. The image is returned inline; pass "fileName" to ALSO save it to disk.',
+		{
+			fileName: z
+				.string()
+				.optional()
+				.describe(
+					'If set, also save the PNG to disk. Absolute path is used as-is; a bare name is placed under ' +
+						'A2N_EDA_CAPTURE_DIR (or the OS temp dir). ".png" is appended if missing.',
+				),
+			scale: z.number().min(1).max(4).optional().describe('Rasterization scale factor (default 2 = ~2x resolution).'),
+			port: z.number().optional().describe('CDP remote-debugging port (default 9222 or A2N_EDA_CDP_PORT).'),
+		},
+		async ({ fileName, scale, port }) => {
+			const shot = await captureEditorImage({ port, scale });
+			const content: Array<
+				{ type: 'image'; data: string; mimeType: string } | { type: 'text'; text: string }
+			> = [{ type: 'image', data: shot.data, mimeType: shot.mimeType }];
+
+			if (fileName) {
+				const baseDir = process.env.A2N_EDA_CAPTURE_DIR || os.tmpdir();
+				let outPath = path.isAbsolute(fileName) ? fileName : path.join(baseDir, fileName);
+				if (!/\.png$/i.test(outPath)) outPath += '.png';
+				try {
+					fs.mkdirSync(path.dirname(outPath), { recursive: true });
+					fs.writeFileSync(outPath, Buffer.from(shot.data, 'base64'));
+					content.push({ type: 'text', text: `Saved PNG (${shot.width}x${shot.height}) to ${outPath}` });
+				} catch (err) {
+					content.push({ type: 'text', text: `Capture succeeded but saving failed: ${err instanceof Error ? err.message : String(err)}` });
+				}
+			}
+			return { content };
+		},
 	);
 
 	// ===== Component search (mode-aware: online/offline/hybrid) =====

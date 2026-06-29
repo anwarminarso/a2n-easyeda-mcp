@@ -8,7 +8,16 @@
 		"type": "git",
 		"url": ""
 	},
-	"keywords": ["mcp", "easyeda", "jlceda", "pcb", "schematic", "eda", "automation", "a2n"],
+	"keywords": [
+		"mcp",
+		"easyeda",
+		"jlceda",
+		"pcb",
+		"schematic",
+		"eda",
+		"automation",
+		"a2n"
+	],
 	"type": "commonjs",
 	"bin": {
 		"a2n-easyeda-mcp": "dist/mcp-server/index.js"
