@@ -1,6 +1,6 @@
 {
 	"name": "a2n-easyeda-mcp",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "a2n.EasyEDA MCP - Pure interface MCP server for EasyEDA Pro (no AI, no external server). Online/Offline/Hybrid.",
 	"license": "MIT",
 	"author": "a2n",
