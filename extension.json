@@ -3,7 +3,7 @@
 	"uuid": "a2e0d0a0000000000000000000000001",
 	"displayName": "a2n.EasyEDA MCP",
 	"description": "Pure interface MCP bridge for EasyEDA Pro. No AI, no external server. Online/Offline/Hybrid.",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"publisher": "a2n",
 	"engines": {
 		"eda": "^2.2.0"
