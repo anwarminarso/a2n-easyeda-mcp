@@ -22,7 +22,8 @@ export const schHandlers: Record<string, Handler> = {
 	// ===== Document / Netlist / DRC =====
 	'sch.document.save': async () => eda.sch_Document.save(),
 	'sch.document.importChanges': async () => eda.sch_Document.importChanges(),
-	'sch.drc.check': async (p) => eda.sch_Drc.check(p.strict, p.userInterface),
+	// verbose (default true) returns the issue list ([] when clean) instead of a bare boolean.
+	'sch.drc.check': async (p) => eda.sch_Drc.check(p.strict ?? true, p.userInterface ?? false, (p.verbose ?? true) as true),
 	'sch.netlist.get': async (p) => eda.sch_Netlist.getNetlist(p.type),
 	'sch.netlist.set': async (p) => eda.sch_Netlist.setNetlist(p.type, p.netlist),
 

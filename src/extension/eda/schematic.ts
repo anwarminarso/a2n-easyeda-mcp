@@ -110,10 +110,21 @@ export async function getSchematic(primitiveIds?: string[], options?: { disableE
 
 	if (!netlistText) throw new Error('Failed to export netlist');
 
+	const isName = (n: unknown): n is string => typeof n === 'string' && n.trim().length > 0;
 	const allWiresName = await eda.sch_PrimitiveWire.getAll()
-		.then((wires) => wires.map((wire) => wire.getState_Net()).filter((n): n is string => typeof n === 'string' && n.trim().length > 0))
+		.then((wires) => wires.map((wire) => wire.getState_Net()).filter(isName))
 		.catch(() => []);
-	const currentPageSignalNames = new Set(allWiresName);
+	// Nets defined only by power/ground flags or net ports (unnamed wires + a GND flag) must count as
+	// current-page signals too; otherwise their pins are reported as floating.
+	const flagNames: string[] = [];
+	for (const type of [ESCH_PrimitiveComponentType.NET_FLAG, ESCH_PrimitiveComponentType.NET_PORT]) {
+		const flags = await eda.sch_PrimitiveComponent.getAll(type).catch(() => []);
+		for (const flag of flags) {
+			const net = (flag as any).getState_Net?.();
+			if (isName(net)) flagNames.push(net);
+		}
+	}
+	const currentPageSignalNames = new Set([...allWiresName, ...flagNames]);
 
 	const pinToSignal = parseAllegroNetlist(netlistText, currentPageSignalNames);
 

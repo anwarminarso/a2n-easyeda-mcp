@@ -3,7 +3,9 @@ import { z } from 'zod';
 import type { WebSocketBridge } from '../bridge';
 
 function text(result: unknown) {
-	return { content: [{ type: 'text' as const, text: typeof result === 'string' ? result : JSON.stringify(result, null, 2) }] };
+	// JSON.stringify(undefined) is undefined, which fails MCP result validation; report it as null instead.
+	const body = typeof result === 'string' ? result : (JSON.stringify(result, null, 2) ?? 'null');
+	return { content: [{ type: 'text' as const, text: body }] };
 }
 
 export function registerCommonTools(server: McpServer, bridge: WebSocketBridge): void {
@@ -12,9 +14,19 @@ export function registerCommonTools(server: McpServer, bridge: WebSocketBridge):
 		'Get a2n.EasyEDA MCP connection status, the active mode (online/offline/hybrid), and current project info.',
 		{},
 		async () => {
+			const base = { endpoint: bridge.endpoint, listening: bridge.isListening() };
+			if (!bridge.isConnected()) {
+				return text({
+					...base,
+					connected: false,
+					hint: base.listening
+						? 'Open EasyEDA Pro, open a schematic or PCB, then click "a2n MCP -> Connect MCP". Check that the extension port matches.'
+						: 'The WebSocket port is in use by another process; the server keeps retrying to bind it.',
+				});
+			}
 			const config = await bridge.send('a2n.config.get');
 			const project = await bridge.send('dmt.project.getInfo').catch(() => null);
-			return text({ connected: true, config, project });
+			return text({ ...base, connected: true, config, project });
 		},
 	);
 
@@ -57,7 +69,7 @@ export function registerCommonTools(server: McpServer, bridge: WebSocketBridge):
 	server.tool(
 		'eda_exec',
 		'Dev/advanced: invoke ANY eda.* API by dotted path without changing the extension. ' +
-			'e.g. path="sch_ManufactureData.getExportDocumentFile", args=["sch","PNG",{},"Current Schematic Page"]. ' +
+			'e.g. path="sch_ManufactureData.getExportDocumentFile", args=["sch.png","PNG",{"theme":"Default"},"Current Schematic"]. ' +
 			'New capabilities can be prototyped Node-side only (no extension reinstall). ' +
 			'File results return as base64; image files are shown directly.',
 		{
@@ -66,8 +78,16 @@ export function registerCommonTools(server: McpServer, bridge: WebSocketBridge):
 		},
 		async ({ path, args }) => {
 			const result = (await bridge.send('eda.exec', { path, args })) as any;
-			if (result && result.__file && typeof result.mimeType === 'string' && result.mimeType.startsWith('image/')) {
-				return { content: [{ type: 'image' as const, data: result.data, mimeType: result.mimeType }] };
+			if (result && result.__file) {
+				// EasyEDA often reports exported images as application/octet-stream; trust the file extension too.
+				const ext = /\.(png|jpe?g|gif|webp)$/i.exec(String(result.fileName || ''))?.[1]?.toLowerCase();
+				const mimeType =
+					typeof result.mimeType === 'string' && result.mimeType.startsWith('image/')
+						? result.mimeType
+						: ext
+							? `image/${ext === 'jpg' ? 'jpeg' : ext}`
+							: undefined;
+				if (mimeType) return { content: [{ type: 'image' as const, data: result.data, mimeType }] };
 			}
 			return text(result);
 		},
@@ -92,9 +112,9 @@ const EDA_GUIDE = `# a2n.EasyEDA MCP — Agent Guide
 
 ## Coordinate system
 - sch_place_component(x, y): placement coordinate. +Y is UP on screen, +X is right. Grid step = 10.
-- sch_get_component_pins returns each pin's CANVAS coordinates, where pin Y is NEGATIVE
-  (canvas space). Use those pin coordinates DIRECTLY as wire endpoints.
-- So: place with positive y; wire using the pin coordinates returned (negative y). Do not negate.
+- sch_get_component_pins returns pin tip coordinates in the SAME space as placement (verified on
+  EasyEDA Pro V3.2). Use them directly as wire endpoints.
+- A4 sheet = 1170 x 825 units, origin bottom-left; the title block sits bottom-right (about x>450, y<215).
 
 ## Wiring is BY NET NAME (cleanest method)
 - Every wire can carry a 'net' property. Pins connected to wires that share the same net NAME
@@ -103,8 +123,12 @@ const EDA_GUIDE = `# a2n.EasyEDA MCP — Agent Guide
   e.g. sch_create_wire(line=[pinX, pinY, pinX+20, pinY], net="VBAT_RAIL").
 - For components with multiple same-node pins (MOSFET S/D arrays), draw one short wire spanning
   those collinear pins with the net name to tie them at once.
-- sch_create_netflag only accepts STANDARD power symbols (e.g. VCC, GND) — not arbitrary names.
-  For arbitrary nets (SW1, VBUS, ...) use named stub wires.
+- sch_create_netflag takes identification "Power" or "Ground" (plus AnalogGround/ProtectGround) and a
+  net name such as VCC or GND. Power wires can stay unnamed: the flag names the net.
+  For arbitrary nets (SW1, VBUS, ...) use named wires.
+- Moving a wire with modify(line) clears its net name; set the net again afterwards.
+- Do not edit a part's "name" attribute: DRC then warns the part no longer matches its supplier part.
+- sch_get_netlist (type "Allegro") is the ground truth for connectivity.
 
 ## Recommended workflow (place -> wire -> verify loop)
 1. eda_get_project_info, then eda_open_document for the target schematic page.
@@ -113,6 +137,7 @@ const EDA_GUIDE = `# a2n.EasyEDA MCP — Agent Guide
 4. Create net-named stub wires on each pin (same name = connected).
 5. sch_read_circuit to VERIFY every pin resolved to the intended signal_name.
 6. sch_export_image to VISUALLY verify layout (overlaps, alignment, off-sheet, title block).
+   sch_run_drc returns { passed, issues }.
 7. Fine-tune positions/rotations, then re-verify. Save sch_checkpoint_save between major steps.
 
 ## Layout tips
@@ -120,6 +145,13 @@ const EDA_GUIDE = `# a2n.EasyEDA MCP — Agent Guide
 - Lay power chains left->right in a row; keep the controller/IC central; group passives by function.
 - The sheet has a title block (commonly bottom-right) and border — keep components clear of it.
 - Use the 'rotation' argument on sch_place_component for cleaner pin orientation.
+
+## PCB notes
+- PCB units are mil. Layer IDs: 1 Top, 2 Bottom, 15/16 Inner1/Inner2, 11 Board Outline.
+- pcb_Document.importChanges() opens a confirmation dialog in EasyEDA; the user (or UI automation)
+  must click "Apply Changes" before the components appear.
+- pcb_create_board_outline draws the outline; pcb_get_board_outline reports its size.
+- pcb_create_pour only creates the pour outline; run pcb_rebuild_pours to fill the copper.
 
 ## Safety
 - sch_checkpoint_save before large edits; sch_checkpoint_restore to revert.

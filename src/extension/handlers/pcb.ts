@@ -38,7 +38,12 @@ export const pcbHandlers: Record<string, Handler> = {
 	'pcb.delete.line': async (p) => eda.pcb_PrimitiveLine.delete(p.ids),
 	'pcb.getAll.polyline': async (p) => eda.pcb_PrimitivePolyline.getAll(p.net, p.layer),
 	'pcb.get.polyline': async (p) => eda.pcb_PrimitivePolyline.get(p.primitiveIds),
-	'pcb.create.polyline': async (p) => eda.pcb_PrimitivePolyline.create(p.net, p.layer, p.polygon, p.lineWidth),
+	'pcb.create.polyline': async (p) => {
+		// The API needs an IPCB_Polygon object; raw source arrays (e.g. [x1, y1, 'L', x2, y2, ...]) are rejected.
+		const polygon = Array.isArray(p.polygon) ? eda.pcb_MathPolygon.createPolygon(p.polygon) : p.polygon;
+		if (!polygon) throw new Error('Invalid polygon data');
+		return eda.pcb_PrimitivePolyline.create(p.net ?? '', p.layer, polygon, p.lineWidth, p.primitiveLock);
+	},
 	'pcb.modify.polyline': async (p) => eda.pcb_PrimitivePolyline.modify(p.primitiveId, p.property),
 	'pcb.delete.polyline': async (p) => eda.pcb_PrimitivePolyline.delete(p.ids),
 
@@ -114,6 +119,21 @@ export const pcbHandlers: Record<string, Handler> = {
 		return eda.pcb_PrimitivePour.create(p.net, p.layer, polygon, p.pourFillMethod, p.preserveSilos, p.pourName, p.pourPriority, p.lineWidth, p.primitiveLock);
 	},
 	'pcb.delete.pour': async (p) => eda.pcb_PrimitivePour.delete(p.ids),
+	// A pour created through the API is only an outline; its copper must be rebuilt (Shift+B in the UI).
+	'pcb.pour.rebuildAll': async () => {
+		const pours = await eda.pcb_PrimitivePour.getAll();
+		const results: Array<{ primitiveId: string; net: string; layer: number; rebuilt: boolean; error?: string }> = [];
+		for (const pour of pours) {
+			const entry = { primitiveId: pour.getState_PrimitiveId(), net: pour.getState_Net(), layer: pour.getState_Layer() as number, rebuilt: false };
+			try {
+				entry.rebuilt = !!(await pour.rebuildCopperRegion());
+				results.push(entry);
+			} catch (err) {
+				results.push({ ...entry, error: err instanceof Error ? err.message : String(err) });
+			}
+		}
+		return { total: pours.length, rebuilt: results.filter((r) => r.rebuilt).length, pours: results };
+	},
 	'pcb.getAll.fill': async (p) => eda.pcb_PrimitiveFill.getAll(p.layer, p.net),
 	'pcb.create.fill': async (p) => {
 		const polygon = eda.pcb_MathPolygon.createPolygon(p.polygon);

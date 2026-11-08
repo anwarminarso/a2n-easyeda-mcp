@@ -8,13 +8,22 @@ export const projectHandlers: Record<string, Handler> = {
 		const project_data: any[] = [];
 
 		const filterSchPage = (page: any) => ({ name: page.name, itemType: page.itemType, uuid: page.uuid });
-		const filterSch = (sch: any) => ({ name: sch.name, itemType: sch.itemType, page: sch.page.map(filterSchPage), uuid: sch.uuid });
+		const filterSch = (sch: any) => ({ name: sch.name, itemType: sch.itemType, page: (sch.page ?? []).map(filterSchPage), uuid: sch.uuid });
+		const filterDoc = (doc: any) => ({ name: doc.name, itemType: doc.itemType, uuid: doc.uuid });
 
-		for (const item of projectInfo.data) {
+		for (const item of projectInfo.data as any[]) {
 			if (item.itemType === EDMT_ItemType.BOARD) {
-				project_data.push({ name: item.name, itemType: item.itemType, schematic: filterSch(item.schematic) });
+				project_data.push({
+					name: item.name,
+					itemType: item.itemType,
+					schematic: item.schematic ? filterSch(item.schematic) : undefined,
+					pcb: item.pcb ? filterDoc(item.pcb) : undefined,
+				});
 			} else if (item.itemType === EDMT_ItemType.SCHEMATIC) {
 				project_data.push({ name: item.name, itemType: item.itemType, page: filterSch(item).page, uuid: item.uuid });
+			} else if (item.itemType === EDMT_ItemType.PCB || item.itemType === 'Panel') {
+				// Free PCBs (not bound to a board) and panels.
+				project_data.push(filterDoc(item));
 			}
 		}
 

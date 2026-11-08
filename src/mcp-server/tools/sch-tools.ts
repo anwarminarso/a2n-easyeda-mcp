@@ -7,7 +7,15 @@ import type { WebSocketBridge } from '../bridge';
 import { captureEditorImage } from '../cdp-capture';
 
 function text(result: unknown) {
-	return { content: [{ type: 'text' as const, text: typeof result === 'string' ? result : JSON.stringify(result, null, 2) }] };
+	// JSON.stringify(undefined) is undefined, which fails MCP result validation; report it as null instead.
+	const body = typeof result === 'string' ? result : (JSON.stringify(result, null, 2) ?? 'null');
+	return { content: [{ type: 'text' as const, text: body }] };
+}
+
+/** Read width/height from a PNG IHDR chunk (bytes 16..23). */
+function pngSize(buf: Buffer): { width: number; height: number } {
+	if (buf.length < 24) return { width: 0, height: 0 };
+	return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
 }
 
 export function registerSchTools(server: McpServer, bridge: WebSocketBridge): void {
@@ -118,9 +126,15 @@ export function registerSchTools(server: McpServer, bridge: WebSocketBridge): vo
 
 	server.tool(
 		'sch_run_drc',
-		'Run Design Rule Check (DRC) on the schematic.',
-		{ strict: z.boolean().optional(), userInterface: z.boolean().optional() },
-		async (params) => text(await bridge.send('sch.drc.check', params)),
+		'Run Design Rule Check (DRC) on the schematic. With verbose (default true) returns { passed, issues } where ' +
+			'issues lists counts per type (e.g. [{type:"warn",count:1}]); set userInterface=true to also open the DRC ' +
+			'panel in EasyEDA with the full messages.',
+		{ strict: z.boolean().optional(), userInterface: z.boolean().optional(), verbose: z.boolean().optional() },
+		async (params) => {
+			const result = await bridge.send('sch.drc.check', params);
+			if (Array.isArray(result)) return text({ passed: result.length === 0, issues: result });
+			return text({ passed: result === true, result });
+		},
 	);
 
 	server.tool(
@@ -142,10 +156,33 @@ export function registerSchTools(server: McpServer, bridge: WebSocketBridge): vo
 			port: z.number().optional().describe('CDP remote-debugging port (default 9222 or A2N_EDA_CDP_PORT).'),
 		},
 		async ({ fileName, scale, port }) => {
-			const shot = await captureEditorImage({ port, scale });
+			let shot: { data: string; mimeType: string; width: number; height: number };
+			let source = 'cdp';
+			try {
+				shot = await captureEditorImage({ port, scale });
+			} catch (cdpErr) {
+				// EasyEDA Pro V3.2 no longer renders the schematic in an "entry=sch" iframe, so the CDP capture
+				// cannot find it. Fall back to the native "Export -> PNG" of the current schematic.
+				const file = (await bridge.send('eda.exec', {
+					path: 'sch_ManufactureData.getExportDocumentFile',
+					args: ['schematic.png', 'PNG', { theme: 'Default' }, 'Current Schematic'],
+				})) as { __file?: boolean; data?: string } | undefined;
+				if (!file?.__file || !file.data) {
+					throw new Error(
+						'Schematic export failed. CDP capture: ' +
+							(cdpErr instanceof Error ? cdpErr.message : String(cdpErr)) +
+							' Native export returned no file; open a schematic page first.',
+					);
+				}
+				shot = { data: file.data, mimeType: 'image/png', ...pngSize(Buffer.from(file.data, 'base64')) };
+				source = 'native export';
+			}
 			const content: Array<
 				{ type: 'image'; data: string; mimeType: string } | { type: 'text'; text: string }
-			> = [{ type: 'image', data: shot.data, mimeType: shot.mimeType }];
+			> = [
+				{ type: 'image', data: shot.data, mimeType: shot.mimeType },
+				{ type: 'text', text: `Rendered via ${source} (${shot.width}x${shot.height})` },
+			];
 
 			if (fileName) {
 				const baseDir = process.env.A2N_EDA_CAPTURE_DIR || os.tmpdir();
@@ -207,9 +244,11 @@ export function registerSchTools(server: McpServer, bridge: WebSocketBridge): vo
 
 	server.tool(
 		'sch_create_netflag',
-		'Create a net flag (e.g. VCC/GND short symbol) attached to a net at a position.',
+		'Create a power/ground net flag at a position. The flag attaches at (x, y); place it on a wire end or pin tip.',
 		{
-			identification: z.string().describe('Symbol identification (e.g. "VCC", "GND")'),
+			identification: z
+				.enum(['Power', 'Ground', 'AnalogGround', 'ProtectGround'])
+				.describe('Flag symbol type: "Power" for VCC/VDD/+5V rails, "Ground" for GND'),
 			net: z.string(),
 			x: z.number(),
 			y: z.number(),
