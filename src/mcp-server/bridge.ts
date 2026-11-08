@@ -13,10 +13,15 @@ export interface BridgeResponse {
 }
 
 interface PendingRequest {
+	socket: WebSocket;
 	resolve: (value: unknown) => void;
 	reject: (reason: Error) => void;
 	timer: ReturnType<typeof setTimeout>;
 }
+
+const BIND_RETRY_MS = 3000;
+/** Close code sent to an older extension socket when a newer one takes over. */
+const CLOSE_REPLACED = 4001;
 
 /**
  * WebSocket bridge between the MCP server (stdio) and the EasyEDA Pro extension.
@@ -28,6 +33,9 @@ export class WebSocketBridge {
 	private pendingRequests = new Map<string, PendingRequest>();
 	private requestIdCounter = 0;
 	private readonly timeout: number;
+	private listening = false;
+	private stopped = false;
+	private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(
 		private readonly port: number = 8788,
@@ -37,64 +45,106 @@ export class WebSocketBridge {
 		this.timeout = timeout;
 	}
 
+	get endpoint(): string {
+		return `ws://${this.host}:${this.port}`;
+	}
+
+	isListening(): boolean {
+		return this.listening;
+	}
+
+	/**
+	 * Bind the WebSocket server. Resolves once listening. If the port is in use, it keeps
+	 * retrying every few seconds (the returned promise stays pending until it binds), so callers
+	 * should not block MCP stdio startup on it.
+	 */
 	start(): Promise<void> {
-		return new Promise((resolve, reject) => {
-			this.wss = new WebSocketServer({ port: this.port, host: this.host });
+		this.stopped = false;
+		return new Promise((resolve, reject) => this.listen(resolve, reject));
+	}
 
-			this.wss.on('listening', () => {
-				console.error(`[a2n-bridge] WebSocket server listening on ws://${this.host}:${this.port}`);
-				resolve();
-			});
+	private listen(resolve: () => void, reject: (err: Error) => void): void {
+		if (this.stopped) return;
+		const wss = new WebSocketServer({ port: this.port, host: this.host });
+		this.wss = wss;
 
-			this.wss.on('error', (err: NodeJS.ErrnoException) => {
-				if (err.code === 'EADDRINUSE') {
-					// Keep MCP stdio alive; just retry binding so we self-heal across reloads.
-					console.error(`[a2n-bridge] Port ${this.port} in use, retrying in 3s...`);
-					setTimeout(() => {
-						try {
-							this.wss?.close();
-						} catch {
-							/* ignore */
-						}
-						this.start().then(resolve).catch(reject);
-					}, 3000);
+		wss.on('listening', () => {
+			this.listening = true;
+			console.error(`[a2n-bridge] WebSocket server listening on ${this.endpoint}`);
+			resolve();
+		});
+
+		wss.on('error', (err: NodeJS.ErrnoException) => {
+			if (!this.listening && err.code === 'EADDRINUSE') {
+				console.error(`[a2n-bridge] Port ${this.port} in use, retrying in ${BIND_RETRY_MS / 1000}s...`);
+				wss.removeAllListeners();
+				try {
+					wss.close();
+				} catch {
+					/* ignore */
+				}
+				if (this.wss === wss) this.wss = null;
+				this.retryTimer = setTimeout(() => {
+					this.retryTimer = null;
+					this.listen(resolve, reject);
+				}, BIND_RETRY_MS);
+				return;
+			}
+			console.error('[a2n-bridge] WebSocket server error:', err);
+			if (!this.listening) reject(err);
+		});
+
+		wss.on('connection', (ws) => this.attachClient(ws));
+	}
+
+	private attachClient(ws: WebSocket): void {
+		const previous = this.client;
+		if (previous && previous !== ws && previous.readyState === WebSocket.OPEN) {
+			console.error('[a2n-bridge] New EasyEDA extension connection replaces the previous one');
+			this.rejectPendingFor(previous, 'EasyEDA extension reconnected (a newer connection replaced this one). Retry the tool call.');
+			try {
+				// Tell the old extension instance not to auto-reconnect and fight over the slot.
+				previous.send(JSON.stringify({ event: 'replaced' }));
+				previous.close(CLOSE_REPLACED, 'Replaced by a newer EasyEDA extension connection');
+			} catch {
+				/* ignore */
+			}
+		}
+
+		console.error('[a2n-bridge] EasyEDA extension connected');
+		this.client = ws;
+
+		ws.on('message', (data) => {
+			try {
+				const msg = JSON.parse(data.toString());
+				// Heartbeat support
+				if (msg && msg.event === 'ping') {
+					ws.send(JSON.stringify({ event: 'pong' }));
 					return;
 				}
-				console.error('[a2n-bridge] WebSocket server error:', err);
-				reject(err);
-			});
-
-			this.wss.on('connection', (ws) => {
-				console.error('[a2n-bridge] EasyEDA extension connected');
-				this.client = ws;
-
-				ws.on('message', (data) => {
-					try {
-						const msg = JSON.parse(data.toString());
-						// Heartbeat support
-						if (msg && msg.event === 'ping') {
-							ws.send(JSON.stringify({ event: 'pong' }));
-							return;
-						}
-						this.handleResponse(msg as BridgeResponse);
-					} catch (err) {
-						console.error('[a2n-bridge] Failed to parse message:', err);
-					}
-				});
-
-				ws.on('close', () => {
-					console.error('[a2n-bridge] EasyEDA extension disconnected');
-					if (this.client === ws) this.client = null;
-					for (const [id, pending] of this.pendingRequests) {
-						clearTimeout(pending.timer);
-						pending.reject(new Error('EasyEDA extension disconnected'));
-						this.pendingRequests.delete(id);
-					}
-				});
-
-				ws.on('error', (err) => console.error('[a2n-bridge] Client error:', err));
-			});
+				this.handleResponse(msg as BridgeResponse);
+			} catch (err) {
+				console.error('[a2n-bridge] Failed to parse message:', err);
+			}
 		});
+
+		ws.on('close', () => {
+			console.error('[a2n-bridge] EasyEDA extension disconnected');
+			if (this.client === ws) this.client = null;
+			// Only requests that were sent over this socket can no longer be answered.
+			this.rejectPendingFor(ws, 'EasyEDA extension disconnected');
+		});
+
+		ws.on('error', (err) => console.error('[a2n-bridge] Client error:', err));
+	}
+
+	private rejectPendingFor(socket: WebSocket, message: string): void {
+		for (const [id, pending] of this.pendingRequests) {
+			if (pending.socket !== socket) continue;
+			clearTimeout(pending.timer);
+			this.pendingRequests.delete(id);
+			pending.reject(new Error(message));
+		}
 	}
 
 	isConnected(): boolean {
@@ -102,12 +152,17 @@ export class WebSocketBridge {
 	}
 
 	async send(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<unknown> {
-		if (!this.isConnected()) {
+		const client = this.client;
+		if (!client || client.readyState !== WebSocket.OPEN) {
+			const listenHint = this.listening
+				? `The MCP server is listening on ${this.endpoint}.`
+				: `The MCP server could not bind ${this.endpoint} yet (port in use?); it keeps retrying.`;
 			throw new Error(
 				'EasyEDA extension is not connected.\n' +
 					'1. Open EasyEDA Pro and open a schematic or PCB.\n' +
 					'2. Click "a2n MCP -> Connect MCP".\n' +
-					'3. Make sure the configured port matches this server.',
+					'3. Make sure the configured port matches this server.\n' +
+					listenHint,
 			);
 		}
 
@@ -121,8 +176,14 @@ export class WebSocketBridge {
 				reject(new Error(`Request timed out after ${effectiveTimeout}ms: ${method}`));
 			}, effectiveTimeout);
 
-			this.pendingRequests.set(id, { resolve, reject, timer });
-			this.client!.send(JSON.stringify(request));
+			this.pendingRequests.set(id, { socket: client, resolve, reject, timer });
+			try {
+				client.send(JSON.stringify(request));
+			} catch (err) {
+				clearTimeout(timer);
+				this.pendingRequests.delete(id);
+				reject(err instanceof Error ? err : new Error(String(err)));
+			}
 		});
 	}
 
@@ -139,6 +200,11 @@ export class WebSocketBridge {
 	}
 
 	async stop(): Promise<void> {
+		this.stopped = true;
+		if (this.retryTimer) {
+			clearTimeout(this.retryTimer);
+			this.retryTimer = null;
+		}
 		for (const [id, pending] of this.pendingRequests) {
 			clearTimeout(pending.timer);
 			pending.reject(new Error('Bridge shutting down'));
@@ -148,8 +214,11 @@ export class WebSocketBridge {
 			this.client.close();
 			this.client = null;
 		}
+		const wss = this.wss;
+		this.wss = null;
+		this.listening = false;
 		return new Promise((resolve) => {
-			if (this.wss) this.wss.close(() => resolve());
+			if (wss) wss.close(() => resolve());
 			else resolve();
 		});
 	}

@@ -42,7 +42,9 @@ export async function getConfig(): Promise<A2nConfig> {
 
 export async function setConfig(patch: Partial<A2nConfig>): Promise<A2nConfig> {
 	const current = await getConfig();
-	const next: A2nConfig = { ...current, ...patch };
+	// Ignore undefined values so a partial patch never wipes stored settings.
+	const defined = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) as Partial<A2nConfig>;
+	const next: A2nConfig = { ...current, ...defined };
 	// normalize
 	if (!next.port || next.port < 1 || next.port > 65535) next.port = DEFAULT_CONFIG.port;
 	if (next.mode !== 'online' && next.mode !== 'offline' && next.mode !== 'hybrid') next.mode = DEFAULT_CONFIG.mode;

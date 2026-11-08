@@ -10,4 +10,5 @@
 /tsconfig.json
 /dist/mcp-server/
 /.edaignore
-debug.log
+*.log
+/0819f05c4eef4c71ace90d822a990e87

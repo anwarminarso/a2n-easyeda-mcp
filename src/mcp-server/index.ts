@@ -22,7 +22,6 @@ const WS_HOST = process.env.A2N_EDA_WS_HOST || '127.0.0.1';
 
 async function main() {
 	const bridge = new WebSocketBridge(WS_PORT, WS_HOST);
-	await bridge.start();
 
 	const server = new McpServer({
 		name: 'a2n-easyeda-mcp',
@@ -33,11 +32,19 @@ async function main() {
 	registerSchTools(server, bridge);
 	registerPcbTools(server, bridge);
 
+	// Connect MCP stdio first so the client handshake never waits on the WebSocket port.
+	// If the port is busy, the bridge keeps retrying in the background and tools report it.
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
-
 	console.error('[a2n-mcp] a2n.EasyEDA MCP server started');
-	console.error(`[a2n-mcp] Waiting for EasyEDA extension on ws://${WS_HOST}:${WS_PORT}`);
+
+	bridge
+		.start()
+		.then(() => console.error(`[a2n-mcp] Waiting for EasyEDA extension on ws://${WS_HOST}:${WS_PORT}`))
+		.catch((err) => {
+			console.error('[a2n-mcp] Fatal WebSocket bridge error:', err);
+			process.exit(1);
+		});
 
 	const shutdown = async () => {
 		await bridge.stop();
